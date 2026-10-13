@@ -27,7 +27,7 @@ releases and run `java -jar synthea-with-dependencies.jar -p 100`. Copy the FHIR
 (Synthea doesn't produce orders or specimens, so the seed script builds those itself.)
 Without Synthea the seed script falls back to built-in fake patients.
 
-## Finished
+## Week 1: Definition of Done
 - [x] `docker compose up` brings up DB + API; `/health` returns ok
 - [x] POSTing the same message twice stores it once (201 then 200)
 - [x] Running the seed script twice adds **zero** new rows the second time
