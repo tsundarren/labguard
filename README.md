@@ -1,5 +1,5 @@
 # LabGuard
-![CI](https://github.com/tsundarren/labguard/actions/workflows/ci.yml/badge.svg)
+[![CI](https://github.com/tsundarren/labguard/actions/workflows/ci.yml/badge.svg)](https://github.com/YOUR-USERNAME/labguard/actions/workflows/ci.yml)
 
 Ingests synthetic lab messages (FHIR), validates them against a rules engine to catch
 requisition-vs-result discrepancies, and keeps an audit trail of every finding.
