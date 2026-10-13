@@ -1,0 +1,5 @@
+__pycache__/
+.venv/
+.pytest_cache/
+data/synthea/*.json
+data/ground_truth.json
