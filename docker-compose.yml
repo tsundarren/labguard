@@ -27,6 +27,25 @@ services:
     volumes:
       - ./app:/srv/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # The API creates the tables at startup, so the worker waits until the API is healthy.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  worker:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://labguard:labguard@db:5432/labguard
+    depends_on:
+      api:
+        condition: service_healthy
+    volumes:
+      - ./app:/srv/app
+    command: python -m app.worker
+    # Run several:  docker compose up -d --scale worker=2
 
 volumes:
   pgdata:
