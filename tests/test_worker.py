@@ -9,7 +9,7 @@ import app.worker as worker
 from app.db import SessionLocal, engine
 from app.ingest import ingest_message
 from app.models import RawMessage
-from scripts.seed import DUPLICATE, fake_patients, generate_dataset
+from scripts.seed import LABELED_RULES, fake_patients, generate_dataset
 
 PATIENTS = fake_patients(20, random.Random(1))
 
@@ -68,7 +68,7 @@ def test_worker_findings_match_the_answer_key(clean_db):
     for message_id, rule_id in rows("SELECT message_id, rule_id FROM findings"):
         found[message_id].add(rule_id)
     for item in items:
-        assert found.get(ids[item.key], set()) == set(item.errors) - {DUPLICATE}, item.key
+        assert found.get(ids[item.key], set()) & LABELED_RULES == set(item.errors), item.key
 
 
 def test_reprocessing_a_message_creates_no_duplicates(clean_db):
@@ -138,3 +138,18 @@ def test_two_workers_process_each_message_exactly_once(clean_db):
     assert scalar("SELECT count(*) FROM raw_messages WHERE status = 'done'") == len(items)
     assert scalar("SELECT count(*) FROM audit_log WHERE action = 'message.processed'") == len(items)
     assert scalar("SELECT count(DISTINCT entity_id) FROM audit_log WHERE action = 'message.processed'") == len(items)
+
+
+def test_duplicate_is_flagged_on_the_later_copy_only(clean_db):
+    item = generate_dataset(1, 0.0, 0.0, 1, PATIENTS)[0]
+    first = ingest([item])[item.key]
+    with SessionLocal() as session:
+        second = ingest_message(session, item.payload, "resend-under-new-key").message.id
+    assert first != second
+
+    worker.drain()
+
+    flagged = [r[0] for r in rows("SELECT message_id FROM findings WHERE rule_id = 'duplicate_submission'")]
+    assert flagged == [second]
+    assert scalar("SELECT severity FROM findings WHERE rule_id = 'duplicate_submission'") == "warning"
+    assert scalar("SELECT count(*) FROM findings WHERE message_id = :i", i=first) == 0

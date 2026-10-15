@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from .dashboard_api import router as dashboard_router
 from .db import Base, engine, get_session
 from .ingest import ingest_message
 from .models import RawMessage
@@ -20,6 +21,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="LabGuard", version="0.1.0", lifespan=lifespan)
+app.include_router(dashboard_router)
 
 
 class FhirBundle(BaseModel):

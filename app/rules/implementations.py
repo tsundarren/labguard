@@ -113,3 +113,20 @@ class ImplausibleValueRule(Rule):
         if value < low or value > high:
             return [self.finding("result.value", f"Value {value} {msg.result.unit or ''} is outside the plausible range {low} to {high} for {msg.result.test_code}.".replace("  ", " "))]
         return []
+
+
+@register
+class DuplicateSubmissionRule(Rule):
+    """Identical content received again under a different idempotency key.
+
+    Warning, not error: a resend may be legitimate, but someone should look. Only the LATER
+    copy is flagged (the worker sets duplicate_of by comparing arrival order).
+    """
+
+    id = "duplicate_submission"
+    severity = Severity.WARNING
+
+    def check(self, msg: ParsedMessage) -> list[FindingData]:
+        if msg.duplicate_of:
+            return [self.finding("message.content", f"Identical content was already received as message {msg.duplicate_of}.")]
+        return []

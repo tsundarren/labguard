@@ -46,6 +46,7 @@ ERROR_TYPES = [
     "implausible_value",
 ]
 DUPLICATE = "duplicate_submission"
+LABELED_RULES = set(ERROR_TYPES) | {DUPLICATE}  # rule ids the answer key can score
 
 FIRST = ["Ava", "Liam", "Noah", "Mia", "Ethan", "Zoe", "Lucas", "Nora", "Omar", "Priya", "Mateo", "Hana"]
 LAST = ["Carter", "Nguyen", "Patel", "Brooks", "Rivera", "Okafor", "Kim", "Sanders", "Moreno", "Lindqvist"]

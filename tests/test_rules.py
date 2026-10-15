@@ -9,7 +9,7 @@ from app.parsing import parse_bundle
 from app.reference import TESTS
 from app.rules import FindingData, Rule, Severity, all_rules, register, run_rules
 from app.rules.base import unregister
-from scripts.seed import DUPLICATE, ERROR_TYPES, fake_patients, generate_dataset
+from scripts.seed import DUPLICATE, ERROR_TYPES, LABELED_RULES, fake_patients, generate_dataset
 
 PATIENTS = fake_patients(20, random.Random(1))
 
@@ -30,7 +30,8 @@ def test_rules_find_exactly_the_injected_errors():
     seen = set()
     for item in items:
         expected = set(item.errors) - {DUPLICATE}
-        found = {f.rule_id for f in run_rules(parse_bundle(item.payload))}
+        # Only rules the answer key can label; unlabeled ones (e.g. abnormal-value warnings) may fire on clean data.
+        found = {f.rule_id for f in run_rules(parse_bundle(item.payload))} & LABELED_RULES
         assert found == expected, f"{item.key}: expected {expected}, got {found}"
         seen |= found
     assert seen == set(ERROR_TYPES)  # the run actually exercised every rule
@@ -137,3 +138,12 @@ def test_run_rules_accepts_an_explicit_rule_list():
     msg = clean_msg()
     result = dataclasses.replace(msg.result, value=Decimal("999999"), collected_at=None)
     assert {f.rule_id for f in run_rules(dataclasses.replace(msg, result=result), only)} == {"implausible_value"}
+
+
+def test_duplicate_rule_flags_only_when_the_worker_supplies_an_original():
+    msg = clean_msg()
+    assert "duplicate_submission" not in {f.rule_id for f in run_rules(msg)}
+    findings = run_rules(dataclasses.replace(msg, duplicate_of="abc-123"))
+    dup = [f for f in findings if f.rule_id == "duplicate_submission"]
+    assert len(dup) == 1 and dup[0].field == "message.content" and dup[0].severity == Severity.WARNING
+    assert "abc-123" in dup[0].description

@@ -6,13 +6,14 @@ Run:  python -m app.worker           (forever, until SIGINT/SIGTERM)
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 import signal
 import threading
 import uuid
 from dataclasses import asdict
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -50,6 +51,23 @@ def process_message(session: Session, msg: RawMessage) -> int:
     Returns the number of NEW findings created.
     """
     parsed = parse_bundle(msg.payload)  # raises ParseError before anything is written
+
+    # Cross-message context: is there an EARLIER message with identical content?
+    # "Earlier" = arrived first (ties broken by id), so exactly one copy is never flagged.
+    original_id = session.scalar(
+        select(RawMessage.id)
+        .where(
+            RawMessage.content_hash == msg.content_hash,
+            or_(
+                RawMessage.received_at < msg.received_at,
+                and_(RawMessage.received_at == msg.received_at, RawMessage.id < msg.id),
+            ),
+        )
+        .order_by(RawMessage.received_at, RawMessage.id)
+        .limit(1)
+    )
+    if original_id is not None:
+        parsed = dataclasses.replace(parsed, duplicate_of=str(original_id))
 
     # Wipe and rebuild the normalized rows (cascades to orders/results).
     session.execute(delete(Patient).where(Patient.message_id == msg.id))
