@@ -55,6 +55,9 @@ class ParsedMessage:
     result_patient: PatientData  # patient as recorded with the result
     order: OrderData
     result: ResultData
+    # Context the worker fills in from the database (not part of the payload): the id of an
+    # earlier message with identical content, if any. Keeps rules pure and unit-testable.
+    duplicate_of: str | None = None
 
 
 def parse_bundle(payload: dict) -> ParsedMessage:
