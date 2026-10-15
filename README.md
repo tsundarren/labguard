@@ -110,6 +110,7 @@ python -m app.worker --drain            # or run one locally until the queue is 
 | `missing_field` | error | Collection time, specimen ID, ordering provider, result value |
 | `timestamp_order` | error | Result issued at or after specimen collection |
 | `implausible_value` | error | Value inside the physiologically possible range for the test |
+| `duplicate_submission` | warning | Identical content already received under a different idempotency key (only the later copy is flagged) |
 
 ### Design decisions
 
@@ -154,6 +155,54 @@ python -c "import json,collections;d=json.load(open('data/ground_truth.json'));p
 
 **Concurrency.** The test suite includes a concurrent-insert test for ingestion and a two-worker test
 asserting every message is processed exactly once.
+
+## Dashboard
+
+A React + TypeScript (Vite) app for reviewing findings: summary cards, findings by rule, a filterable
+findings queue with resolve / false-positive / reopen actions, and a per-message drill-down showing the
+requisition vs. lab record side by side with the audit trail.
+
+```bash
+docker compose up -d --build        # API + worker + db
+python -m scripts.seed --count 500  # something to look at
+cd frontend && npm install && npm run dev
+```
+Open http://localhost:5173. In development, Vite proxies `/api` to the API on port 8000, so there is no CORS setup.
+
+**API:** `GET /api/stats`, `GET /api/findings` (filters: `status`, `rule_id`, `severity`, `limit`, `offset`),
+`PATCH /api/findings/{id}`, `GET /api/messages/{id}`. There is no authentication yet. This is a local demo of
+synthetic data and would need auth, per-user audit actors, and access controls before anything real.
+
+**Design decisions.** Status changes never delete anything: every transition writes an audit entry with the old
+and new state. The dashboard shows field names and descriptions; identifiers appear only on the drill-down page.
+
+## Accuracy report
+
+```bash
+python -m scripts.seed --count 500
+# wait for the worker to finish, then:
+python -m scripts.accuracy              # or --markdown to paste a table here
+```
+
+Scores each rule against the seed script's answer key: injected, detected, missed, false positives, precision, recall.
+
+**How to read it.** The injected errors were designed alongside the rules, so near-perfect scores are expected.
+This confirms detection works end to end and catches regressions. It is **not** an estimate of accuracy on real data.
+Making it more informative means adding harder cases (name typos and nicknames, borderline values, formatting noise)
+and measuring what breaks.
+
+| Rule | Injected | Detected | Missed | False pos. | Precision | Recall |
+|---|---|---|---|---|---|---|
+| identity_mismatch | 16 | 16 | 0 | 0 | 100.0% | 100.0% |
+| test_mismatch | 13 | 13 | 0 | 0 | 100.0% | 100.0% |
+| specimen_mismatch | 17 | 17 | 0 | 0 | 100.0% | 100.0% |
+| missing_field | 14 | 14 | 0 | 0 | 100.0% | 100.0% |
+| timestamp_order | 16 | 16 | 0 | 0 | 100.0% | 100.0% |
+| implausible_value | 20 | 20 | 0 | 0 | 100.0% | 100.0% |
+| duplicate_submission | 10 | 10 | 0 | 0 | 100.0% | 100.0% |
+| ALL (micro) | 106 | 106 | 0 | 0 | 100.0% | 100.0% |
+
+510 messages scored
 
 ## Roadmap
 
