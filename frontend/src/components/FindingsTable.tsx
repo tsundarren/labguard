@@ -6,11 +6,12 @@ interface Props {
   rules: string[];
   refreshKey: number;
   onChanged: () => void;
+  readOnly: boolean;
 }
 
 const PAGE = 25;
 
-export default function FindingsTable({ rules, refreshKey, onChanged }: Props) {
+export default function FindingsTable({ rules, refreshKey, onChanged, readOnly }: Props) {
   const [status, setStatus] = useState("open");
   const [rule, setRule] = useState("");
   const [offset, setOffset] = useState(0);
@@ -89,9 +90,13 @@ export default function FindingsTable({ rules, refreshKey, onChanged }: Props) {
                 <td>{fmtDate(f.created_at)}</td>
                 <td><span className={`badge status-${f.status}`}>{f.status.replace("_", " ")}</span></td>
                 <td className="actions">
-                  {f.status !== "resolved" && <button onClick={() => change(f.id, "resolved")}>Resolve</button>}
-                  {f.status !== "false_positive" && <button onClick={() => change(f.id, "false_positive")}>False positive</button>}
-                  {f.status !== "open" && <button onClick={() => change(f.id, "open")}>Reopen</button>}
+                  {!readOnly && (
+                    <>
+                      {f.status !== "resolved" && <button onClick={() => change(f.id, "resolved")}>Resolve</button>}
+                      {f.status !== "false_positive" && <button onClick={() => change(f.id, "false_positive")}>False positive</button>}
+                      {f.status !== "open" && <button onClick={() => change(f.id, "open")}>Reopen</button>}
+                    </>
+                  )}
                 </td>
               </tr>
             ))}

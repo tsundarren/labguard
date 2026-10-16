@@ -74,6 +74,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const getStats = () => request<Stats>("/api/stats");
 
+export const getConfig = () => request<{ read_only: boolean }>("/api/config");
+
 export function getFindings(p: { status?: string; rule_id?: string; limit: number; offset: number }) {
   const q = new URLSearchParams({ limit: String(p.limit), offset: String(p.offset) });
   if (p.status) q.set("status", p.status);
