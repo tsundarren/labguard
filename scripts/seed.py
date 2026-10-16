@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import random
 import re
 import sys
@@ -269,6 +270,7 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--synthea-dir", type=Path, default=Path("data/synthea"))
     ap.add_argument("--api", default="http://localhost:8000")
+    ap.add_argument("--api-key", default=os.environ.get("LABGUARD_API_KEY"), help="sent as X-API-Key (or set LABGUARD_API_KEY)")
     ap.add_argument("--out", type=Path, default=Path("data/ground_truth.json"))
     ap.add_argument("--dry-run", action="store_true", help="write the answer key, don't POST")
     args = ap.parse_args()
@@ -289,7 +291,12 @@ def main() -> int:
     else:
         import httpx
 
-        with httpx.Client(base_url=args.api, timeout=15) as client:
+        headers = {"X-API-Key": args.api_key} if args.api_key else {}
+        with httpx.Client(base_url=args.api, timeout=15, headers=headers) as client:
+            try:
+                client.get("/healthz", timeout=120)  # free hosts sleep when idle; wake it first
+            except httpx.HTTPError:
+                pass
             for item in items:
                 r = client.post("/messages", json=item.payload, headers={"Idempotency-Key": item.key})
                 counts[str(r.status_code)] = counts.get(str(r.status_code), 0) + 1
