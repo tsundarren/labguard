@@ -176,22 +176,12 @@ commits once. Crash or error means rollback and the message is simply `pending` 
 workers queue behind the same row, and after the wait the row no longer matches
 `status = 'pending'`, so a `LIMIT 1` query can return nothing while messages remain.
 
-**Two kinds of failure.** An unparseable message (`ParseError`) can never succeed, so it is parked as
-`failed` immediately. An unexpected error (DB hiccup, bug) is retried: the attempt is counted in a *new*
-transaction (the old one rolled back) and the message is parked after `WORKER_MAX_ATTEMPTS`. A poison
-message therefore cannot block the queue.
-
 **Idempotent processing.** Normalized rows are wiped and rebuilt (delete cascades), and findings have
 a unique `(message, rule, field)` constraint with `ON CONFLICT DO NOTHING`. Reprocessing a message,
 which happens after a crash or when rules change, can't create duplicates.
 
 **Rules are pure functions over a parsed message.** The parser and rules never touch the database, so
 they are unit-tested without Postgres. Adding a rule = one class + `@register`; the engine never changes.
-
-**A buggy rule is not a finding.** If a rule raises, the exception propagates and the message is
-retried or parked, instead of silently skipping that rule.
-
-**Findings describe the field, not the patient's values**, so identifiers aren't copied into a second table.
 
 ## Dashboard
 
@@ -282,8 +272,7 @@ was processed about 2.4 s after the last message was accepted. A second worker c
 end-to-end throughput rose only from 188 to 213 msg/s because the test is ingest-bound. Likely limits are the single
 API process and the database connection pool; I have not isolated which.
 
-These numbers come from a laptop with everything on one machine, so they show relative behavior (for example, the
-effect of adding a second worker), not production capacity.
+Benchmarked locally on an M1 Pro Macbook. Results compare one vs. two workers, not production capacity.
 
 ## Deployment
 
@@ -304,23 +293,6 @@ own service, which is the better design for real use because workers can then sc
 
 **Scale-to-zero friendly.** The hosted database suspends when idle, so nothing polls it constantly: the worker is
 woken by new messages, the platform health check (`/healthz`) never touches the database, and the dashboard doesn't poll.
-
-## Verifying it works
-
-**Idempotency.** Run `python -m scripts.seed --count 500` twice. The first run reports `201` for every
-message, the second reports `200` for every message, and no new rows are added.
-
-**Detection vs. the answer key.** With a freshly seeded database and the worker finished, the findings
-per rule should match the injected errors exactly:
-
-```bash
-docker compose exec db psql -U labguard -c "SELECT rule_id, count(*) FROM findings GROUP BY 1 ORDER BY 1;"
-
-python -c "import json,collections;d=json.load(open('data/ground_truth.json'));print(collections.Counter(e for i in d['items'] for e in i['errors']))"
-```
-
-**Concurrency.** The test suite includes a concurrent-insert test for ingestion and a two-worker test
-asserting every message is processed exactly once.
 
 ## Roadmap
 
