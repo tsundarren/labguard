@@ -9,20 +9,63 @@ requisition-vs-result discrepancies, and keeps an audit trail of every finding.
 requisition forms against electronic records in a clinical lab. It is not production healthcare
 software and makes no HIPAA-compliance claims.
 
-**Status:** ingestion API and processing engine are working. Remaining rules, an accuracy report,
-and a dashboard are in progress (see [Roadmap](#roadmap)).
+**Status:** working end to end: idempotent ingestion, queue worker, rules engine, review dashboard,
+accuracy report, and a hosted read-only demo. Planned items are in the [Roadmap](#roadmap).
 
-## How it works
+## Live demo
 
+**https://labguard-0b49.onrender.com/** (synthetic data, read-only)
+
+![LabGuard dashboard demo](docs/demo.gif)
+
+Hosted on free tiers (Render and Neon): the first load after a period of inactivity can take about a minute
+while the service wakes up.
+
+## What it demonstrates
+
+- **Idempotent ingestion:** unique-key upserts, so retries and concurrent duplicates can't double-insert.
+- **A Postgres-backed worker queue** using `FOR UPDATE SKIP LOCKED`, with retry limits and an append-only audit log.
+- **Labeled-error evaluation:** injected errors with precision and recall per rule (a regression check, not a
+  real-world accuracy estimate).
+- **A deployed review dashboard** with a requisition-vs-lab-record drill-down.
+
+**Stack:** Python, FastAPI, PostgreSQL, React, TypeScript, Docker, GitHub Actions.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph Clients
+        S[Sender / seed script]
+        D[React dashboard]
+    end
+    subgraph LabGuard
+        API[FastAPI API]
+        W[Worker]
+        R[Rules engine]
+    end
+    DB[(PostgreSQL)]
+
+    S -->|POST /messages<br/>Idempotency-Key| API
+    API -->|insert, status=pending| DB
+    W -->|claim with SKIP LOCKED| DB
+    W --> R
+    R -->|findings| W
+    W -->|normalized rows, findings, audit| DB
+    D -->|GET and PATCH /api/*| API
+    API -->|read| DB
 ```
-Seed script (synthetic FHIR bundles + labeled errors)
-        |
-POST /messages (FastAPI) --> raw_messages (status: pending)
-        |
-Worker (FOR UPDATE SKIP LOCKED) --> parse --> rules engine
-        |
-patients / orders / results + findings + audit_log (PostgreSQL)
+
+```mermaid
+erDiagram
+    RAW_MESSAGES ||--o{ PATIENTS : has
+    RAW_MESSAGES ||--o| ORDERS : has
+    RAW_MESSAGES ||--o| RESULTS : has
+    RAW_MESSAGES ||--o{ FINDINGS : produces
+    PATIENTS ||--o{ ORDERS : "ordered for"
+    PATIENTS ||--o{ RESULTS : "result for"
 ```
+`audit_log` is append-only and references entities by type and id.
 
 ## Quickstart
 
@@ -49,15 +92,26 @@ Without Synthea it falls back to built-in fake patients.
 
 ```
 app/
-  main.py              FastAPI app: POST /messages, GET /messages/{id}, /health
+  main.py              FastAPI app: POST /messages, GET /messages/{id}, /health, /healthz;
+                       serves the built dashboard in the production image
+  dashboard_api.py     /api/* endpoints for the dashboard
   ingest.py            idempotent insert logic
   models.py            SQLAlchemy tables
   parsing.py           FHIR Bundle -> plain dataclasses (no database)
   reference.py         test catalog: expected specimen, plausible and reference ranges
+  security.py          API-key and read-only guards for the public demo
+  config.py            environment settings
   worker.py            queue worker
   rules/               rules framework, registry, engine, rule implementations
-scripts/seed.py        synthetic data generator with labeled error injection
+scripts/
+  seed.py              synthetic data generator with labeled error injection
+  accuracy.py          precision and recall against the answer key
+  loadtest.py          ingest and processing throughput test
+frontend/              React + TypeScript dashboard (Vite)
 tests/                 unit tests (no DB) and integration tests (need Postgres)
+Dockerfile             development image used by docker compose
+Dockerfile.prod        production image: dashboard build + API
+docker-compose.yml     Postgres + API + worker for local development
 ```
 
 ## Ingestion API
@@ -74,7 +128,7 @@ idempotency key reused with a different payload, `422` not a valid Bundle.
 Same key + same payload returns the original (200). Same key + different payload is a 409.
 With no key supplied, the SHA-256 of the canonical payload is used as the key.
 
-**Same content, new key is stored, not rejected.** The planned duplicate-submission rule should
+**Same content, new key is stored, not rejected.** The duplicate-submission rule should
 *detect and report* that, not silently drop it. The seed script injects these on purpose.
 
 **Raw payload stored as JSONB, untouched.** Every finding can trace back to the exact input,
@@ -88,7 +142,7 @@ rather than bounced.
 
 **Labeled error injection.** Each injected error breaks exactly one thing (and avoids
 accidentally triggering other rules) so detection accuracy can be measured cleanly.
-Accuracy scoring covers error-severity rules; "abnormal but plausible" results are warnings.
+Accuracy scoring covers the labeled rules; anything without ground truth is reported separately as unscored.
 
 ## Processing Engine
 
@@ -139,23 +193,6 @@ retried or parked, instead of silently skipping that rule.
 
 **Findings describe the field, not the patient's values**, so identifiers aren't copied into a second table.
 
-## Verifying it works
-
-**Idempotency.** Run `python -m scripts.seed --count 500` twice. The first run reports `201` for every
-message, the second reports `200` for every message, and no new rows are added.
-
-**Detection vs. the answer key.** With a freshly seeded database and the worker finished, the findings
-per rule should match the injected errors exactly:
-
-```bash
-docker compose exec db psql -U labguard -c "SELECT rule_id, count(*) FROM findings GROUP BY 1 ORDER BY 1;"
-
-python -c "import json,collections;d=json.load(open('data/ground_truth.json'));print(collections.Counter(e for i in d['items'] for e in i['errors'] if e!='duplicate_submission'))"
-```
-
-**Concurrency.** The test suite includes a concurrent-insert test for ingestion and a two-worker test
-asserting every message is processed exactly once.
-
 ## Dashboard
 
 A React + TypeScript (Vite) app for reviewing findings: summary cards, findings by rule, a filterable
@@ -169,8 +206,9 @@ cd frontend && npm install && npm run dev
 ```
 Open http://localhost:5173. In development, Vite proxies `/api` to the API on port 8000, so there is no CORS setup.
 
-**API:** `GET /api/stats`, `GET /api/findings` (filters: `status`, `rule_id`, `severity`, `limit`, `offset`),
-`PATCH /api/findings/{id}`, `GET /api/messages/{id}`. There is no authentication yet. This is a local demo of
+**API:** `GET /api/config`, `GET /api/stats`, `GET /api/findings` (filters: `status`, `rule_id`, `severity`,
+`limit`, `offset`), `PATCH /api/findings/{id}`, `GET /api/messages/{id}`. In read-only mode (the hosted demo),
+`PATCH` returns 403 and the dashboard hides the status buttons. There is no user authentication. This is a demo of
 synthetic data and would need auth, per-user audit actors, and access controls before anything real.
 
 **Design decisions.** Status changes never delete anything: every transition writes an audit entry with the old
@@ -204,14 +242,97 @@ and measuring what breaks.
 
 510 messages scored
 
+## Load test
+
+```bash
+python -m scripts.loadtest --count 2000 --concurrency 20 --label "1 worker" --markdown
+```
+
+Measured on an Apple M1 Pro (16 GB RAM, Docker limited to 10 CPUs and 8 GB), with Postgres and the API in
+Docker Compose, 2,000 messages.
+
+**Load test: 1 worker**
+
+| Metric | Result |
+|---|---|
+| Messages sent | 2000 |
+| Accepted (201/200) | 2000 |
+| Errors / other | 0 |
+| Concurrency | 20 |
+| Ingest throughput | 240 req/s |
+| Latency p50 / p95 / p99 | 80 ms / 122 ms / 142 ms |
+| Time until all processed | 10.7 s |
+| End-to-end throughput | 188 msg/s |
+
+**Load test: 2 workers**
+
+| Metric | Result |
+|---|---|
+| Messages sent | 2000 |
+| Accepted (201/200) | 2000 |
+| Errors / other | 0 |
+| Concurrency | 20 |
+| Ingest throughput | 232 req/s |
+| Latency p50 / p95 / p99 | 82 ms / 130 ms / 168 ms |
+| Time until all processed | 9.4 s |
+| End-to-end throughput | 213 msg/s |
+
+**What the numbers show.** Ingestion tops out around 240 req/s, and a single worker nearly keeps pace: everything
+was processed about 2.4 s after the last message was accepted. A second worker cut that tail to about 0.8 s, but
+end-to-end throughput rose only from 188 to 213 msg/s because the test is ingest-bound. Likely limits are the single
+API process and the database connection pool; I have not isolated which.
+
+These numbers come from a laptop with everything on one machine, so they show relative behavior (for example, the
+effect of adding a second worker), not production capacity.
+
+## Deployment
+
+**Hosted on:** Render (a free web service running the API, the built dashboard, and the embedded worker from
+`Dockerfile.prod`) with Neon (serverless Postgres on the free plan).
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | Postgres connection string (`postgres://` and `postgresql://` are accepted) |
+| `API_KEY` | If set, `POST /messages` requires an `X-API-Key` header |
+| `READ_ONLY` | `1` disables finding status changes, so visitors can't alter the demo data |
+| `RUN_EMBEDDED_WORKER` | `1` (set in the image) runs the worker as a thread inside the API |
+| `EMBEDDED_WORKER_POLL_INTERVAL` | Fallback poll in seconds for the embedded worker (default 900) |
+
+**Why the worker is embedded here.** Free hosts don't offer free background workers. In the hosted demo, the API wakes
+the worker whenever a message is accepted, with a long fallback poll. Locally, `docker compose` runs the worker as its
+own service, which is the better design for real use because workers can then scale independently.
+
+**Scale-to-zero friendly.** The hosted database suspends when idle, so nothing polls it constantly: the worker is
+woken by new messages, the platform health check (`/healthz`) never touches the database, and the dashboard doesn't poll.
+
+## Verifying it works
+
+**Idempotency.** Run `python -m scripts.seed --count 500` twice. The first run reports `201` for every
+message, the second reports `200` for every message, and no new rows are added.
+
+**Detection vs. the answer key.** With a freshly seeded database and the worker finished, the findings
+per rule should match the injected errors exactly:
+
+```bash
+docker compose exec db psql -U labguard -c "SELECT rule_id, count(*) FROM findings GROUP BY 1 ORDER BY 1;"
+
+python -c "import json,collections;d=json.load(open('data/ground_truth.json'));print(collections.Counter(e for i in d['items'] for e in i['errors']))"
+```
+
+**Concurrency.** The test suite includes a concurrent-insert test for ingestion and a two-worker test
+asserting every message is processed exactly once.
+
 ## Roadmap
 
+- [x] Duplicate-submission rule (same content, different idempotency key)
+- [x] Accuracy report: precision and recall against `data/ground_truth.json`
+- [x] React dashboard: findings queue, error rates by rule, message drill-down
+- [x] Deployment, architecture diagram, demo GIF, load test
 - [ ] Rule: abnormal-but-plausible results (warning severity)
-- [ ] Rule: duplicate submission (same content, different idempotency key)
-- [ ] Accuracy report: precision and recall against `data/ground_truth.json`
-- [ ] React dashboard: findings queue, error rates by rule, message drill-down
-- [ ] Deployment, architecture diagram, demo GIF, load test
-- [ ] Stretch: HL7 v2 input, Alembic migrations, retry backoff
+- [ ] Harder test data for the accuracy report (typos, nicknames, borderline values)
+- [ ] Stretch: HL7 v2 input
+- [ ] Stretch: Alembic migrations
+- [ ] Stretch: retry backoff
 
 ## Known limits
 
@@ -219,3 +340,11 @@ and measuring what breaks.
 - Failed retries have no backoff delay.
 - If rule logic changes, stale findings from the old logic are not auto-resolved.
 - Reference ranges are a small illustrative catalog, not a clinical lab catalog.
+- The hosted demo runs on free tiers, so it sleeps when idle and the first request can be slow.
+
+## Security notes
+
+- All data is synthetic and the hosted demo is read-only.
+- Writers can be required to present an API key; the key is compared in constant time.
+- There is no user authentication or authorization. Real use would need that, TLS everywhere, encryption at rest,
+  per-user audit identities, retention policies, and a compliance review. HIPAA compliance is not claimed.
