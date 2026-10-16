@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from .db import get_session
 from .models import AuditLog, Finding, Order, Patient, RawMessage, Result
+from .security import is_read_only, require_writable
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
 
@@ -39,6 +40,11 @@ class FindingList(BaseModel):
 
 class StatusUpdate(BaseModel):
     status: FindingStatus
+
+
+@router.get("/config")
+def config():
+    return {"read_only": is_read_only()}
 
 
 @router.get("/stats")
@@ -86,7 +92,7 @@ def list_findings(
     return FindingList(total=total, items=[FindingOut.model_validate(f) for f in items])
 
 
-@router.patch("/findings/{finding_id}", response_model=FindingOut)
+@router.patch("/findings/{finding_id}", response_model=FindingOut, dependencies=[Depends(require_writable)])
 def update_finding(finding_id: int, body: StatusUpdate, session: Session = Depends(get_session)):
     finding = session.get(Finding, finding_id, with_for_update=True)
     if finding is None:

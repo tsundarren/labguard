@@ -36,8 +36,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci
+      # After the first local `npm install`, commit package-lock.json and switch this to `npm ci`.
+      - run: npm install
       - run: npm run typecheck
       - run: npm run build

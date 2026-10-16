@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { getStats } from "./api";
+import { getConfig, getStats } from "./api";
 import type { Stats } from "./api";
 import FindingsTable from "./components/FindingsTable";
 import MessageDetailView from "./components/MessageDetail";
@@ -20,6 +20,13 @@ export default function App() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [statsError, setStatsError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [readOnly, setReadOnly] = useState(false);
+
+  useEffect(() => {
+    getConfig()
+      .then((c) => setReadOnly(c.read_only))
+      .catch(() => setReadOnly(false));
+  }, []);
 
   useEffect(() => {
     getStats()
@@ -42,12 +49,13 @@ export default function App() {
         <span className="muted">synthetic data only</span>
         <button onClick={refresh}>Refresh</button>
       </header>
+      {readOnly && <p className="banner">Read-only demo with synthetic data. Finding statuses can't be changed here.</p>}
       {messageMatch ? (
         <MessageDetailView id={messageMatch[1]} refreshKey={refreshKey} />
       ) : (
         <>
           <StatsPanel stats={stats} error={statsError} />
-          <FindingsTable rules={stats?.rules.map((r) => r.rule_id) ?? []} refreshKey={refreshKey} onChanged={refresh} />
+          <FindingsTable rules={stats?.rules.map((r) => r.rule_id) ?? []} refreshKey={refreshKey} onChanged={refresh} readOnly={readOnly} />
         </>
       )}
     </div>

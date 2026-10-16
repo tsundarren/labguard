@@ -17,7 +17,7 @@ from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from .config import MAX_ATTEMPTS, POLL_INTERVAL
+from .config import EMBEDDED_POLL_INTERVAL, MAX_ATTEMPTS, POLL_INTERVAL
 from .db import SessionLocal
 from .models import AuditLog, Finding, Order, Patient, RawMessage, Result
 from .parsing import ParseError, parse_bundle
@@ -25,6 +25,7 @@ from .rules import run_rules
 
 log = logging.getLogger("labguard.worker")
 _stop = threading.Event()
+_wake = threading.Event()  # set when new work may be available (or when stopping)
 
 
 def claim_one(session: Session) -> RawMessage | None:
@@ -164,8 +165,23 @@ def drain() -> int:
     return handled
 
 
-def run() -> None:
-    """Long-running loop. A signal sets the stop flag; the current message always finishes first."""
+def notify() -> None:
+    """Tell an in-process worker that new messages arrived (the API calls this after ingesting)."""
+    _wake.set()
+
+
+def stop() -> None:
+    _stop.set()
+    _wake.set()  # interrupt any idle wait right away
+
+
+def run(poll_interval: float | None = None) -> None:
+    """Long-running loop. stop() ends it; the current message always finishes first.
+
+    When idle it sleeps until notify() or the poll interval, whichever comes first. A separate
+    worker process never gets notify(), so it polls; an embedded worker is woken by the API.
+    """
+    interval = POLL_INTERVAL if poll_interval is None else poll_interval
     while not _stop.is_set():
         try:
             handled = process_next()
@@ -173,8 +189,24 @@ def run() -> None:
             log.exception("worker could not reach the queue; backing off")
             handled = False
         if not handled:
-            _stop.wait(POLL_INTERVAL)
+            _wake.wait(interval)
+            # Safe to clear: anything ingested before this point is seen by the next process_next().
+            _wake.clear()
     log.info("worker stopped cleanly")
+
+
+def start_background() -> threading.Thread:
+    """Run the worker loop in a thread inside the API process (hosted demo)."""
+    _stop.clear()
+    _wake.clear()
+    thread = threading.Thread(target=run, kwargs={"poll_interval": EMBEDDED_POLL_INTERVAL}, name="labguard-worker", daemon=True)
+    thread.start()
+    return thread
+
+
+def stop_background(thread: threading.Thread) -> None:
+    stop()
+    thread.join(timeout=15)
 
 
 def main() -> None:
@@ -187,8 +219,8 @@ def main() -> None:
         log.info("drained %d messages", drain())
         return
 
-    signal.signal(signal.SIGINT, lambda *_: _stop.set())
-    signal.signal(signal.SIGTERM, lambda *_: _stop.set())
+    signal.signal(signal.SIGINT, lambda *_: stop())
+    signal.signal(signal.SIGTERM, lambda *_: stop())
     log.info("worker started (max attempts %d, poll %.1fs)", MAX_ATTEMPTS, POLL_INTERVAL)
     run()
 
